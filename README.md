@@ -96,6 +96,10 @@ configuration options:
 * `pinentry`: The
   [pinentry](https://www.gnupg.org/related_software/pinentry/index.html)
   executable to use. Defaults to `pinentry`.
+* `biometric_unlock`: Optional biometric unlock backend. The only supported
+  value is `desktop_ipc`, which is available on macOS only. When enabled,
+  `rbw` asks a running Bitwarden Desktop app to perform biometric approval and
+  return the decrypted Bitwarden user key over its local IPC channel.
 
 ### Profiles
 
@@ -119,6 +123,38 @@ necessary, so running `rbw login` when you are already logged in will do
 nothing, and similarly for `rbw unlock`. If necessary, you can explicitly log
 out by running `rbw purge`, and you can explicitly lock the database by running
 `rbw lock` or `rbw stop-agent`.
+
+### Bitwarden Desktop Biometric Unlock (macOS)
+
+`rbw` can use Bitwarden Desktop's biometric unlock flow to unlock the local
+vault on macOS:
+
+```sh
+rbw config set biometric_unlock desktop_ipc
+```
+
+When this setting is enabled, `rbw unlock` and commands that trigger an
+implicit unlock first try Bitwarden Desktop IPC. If the desktop app is
+available and configured for biometric unlock for the same Bitwarden account,
+`rbw` will use that approval flow instead of prompting for the master
+password.
+
+The first IPC attempt in a desktop session may ask you to trust the local IPC
+fingerprint through `pinentry`. If biometric approval is explicitly cancelled
+or denied in Bitwarden Desktop, the unlock operation stops immediately instead
+of falling back to the password prompt. If Bitwarden Desktop is unavailable,
+not logged into the same account, or its IPC channel is unavailable, `rbw`
+falls back to the usual password unlock flow through `pinentry`.
+
+To disable biometric unlock, run:
+
+```sh
+rbw config unset biometric_unlock
+```
+
+This v1 integration only replaces password entry for unlocking the local vault.
+Regular login, device registration, and entry-level
+master-password-reprompt continue to use the existing password prompt flow.
 
 `rbw help` can be used to get more information about the available
 functionality.

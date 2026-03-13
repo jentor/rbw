@@ -4,6 +4,7 @@ pub mod base64;
 pub mod cipherstring;
 pub mod config;
 pub mod db;
+pub mod desktop_ipc;
 pub mod dirs;
 pub mod edit;
 pub mod error;

@@ -1237,8 +1237,9 @@ pub fn config_show() -> anyhow::Result<()> {
 }
 
 pub fn config_set(key: &str, value: &str) -> anyhow::Result<()> {
-    let mut config = rbw::config::Config::load()
+    let previous = rbw::config::Config::load()
         .unwrap_or_else(|_| rbw::config::Config::new());
+    let mut config = previous.clone();
     match key {
         "email" => config.email = Some(value.to_string()),
         "sso_id" => config.sso_id = Some(value.to_string()),
@@ -1269,6 +1270,21 @@ pub fn config_set(key: &str, value: &str) -> anyhow::Result<()> {
             config.sync_interval = interval;
         }
         "pinentry" => config.pinentry = value.to_string(),
+        "biometric_unlock" => {
+            if value != "desktop_ipc" {
+                anyhow::bail!(
+                    "invalid value for biometric_unlock: {value} \
+                     (expected desktop_ipc)"
+                );
+            }
+            if !cfg!(target_os = "macos") {
+                anyhow::bail!(
+                    "biometric_unlock=desktop_ipc is only supported on macOS"
+                );
+            }
+            config.biometric_unlock =
+                Some(rbw::config::BiometricUnlock::DesktopIpc);
+        }
         _ => return Err(anyhow::anyhow!("invalid config key: {key}")),
     }
     config.save()?;
@@ -1284,8 +1300,9 @@ pub fn config_set(key: &str, value: &str) -> anyhow::Result<()> {
 }
 
 pub fn config_unset(key: &str) -> anyhow::Result<()> {
-    let mut config = rbw::config::Config::load()
+    let previous = rbw::config::Config::load()
         .unwrap_or_else(|_| rbw::config::Config::new());
+    let mut config = previous.clone();
     match key {
         "email" => config.email = None,
         "sso_id" => config.sso_id = None,
@@ -1298,6 +1315,7 @@ pub fn config_unset(key: &str) -> anyhow::Result<()> {
             config.lock_timeout = rbw::config::default_lock_timeout();
         }
         "pinentry" => config.pinentry = rbw::config::default_pinentry(),
+        "biometric_unlock" => config.biometric_unlock = None,
         _ => return Err(anyhow::anyhow!("invalid config key: {key}")),
     }
     config.save()?;

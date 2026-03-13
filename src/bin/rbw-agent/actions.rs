@@ -404,6 +404,60 @@ async fn unlock_state(
 
         let email = config_email().await?;
 
+        if let Some(identity) = desktop_ipc_identity().await? {
+            match rbw::desktop_ipc::unlock_with_biometrics(
+                &identity,
+                &config_pinentry().await?,
+                environment,
+            )
+            .await
+            {
+                Ok(key) => match rbw::actions::expand_user_key(
+                    key,
+                    &protected_private_key,
+                    &db.protected_org_keys,
+                ) {
+                    Ok((keys, org_keys)) => {
+                        unlock_success(state, keys, org_keys).await?;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Bitwarden Desktop returned an invalid user key, \
+                             falling back to password unlock: {e}"
+                        );
+                    }
+                },
+                Err(
+                    rbw::desktop_ipc::Error::Canceled
+                    | rbw::desktop_ipc::Error::Denied,
+                ) => {
+                    return Err(anyhow::anyhow!(
+                        "Bitwarden Desktop biometric unlock was cancelled"
+                    ));
+                }
+                Err(rbw::desktop_ipc::Error::Unavailable { message }) => {
+                    log::warn!(
+                        "Bitwarden Desktop IPC unavailable, falling back \
+                         to password unlock: {message}"
+                    );
+                }
+                Err(rbw::desktop_ipc::Error::Protocol { message }) => {
+                    log::warn!(
+                        "Bitwarden Desktop IPC protocol error, falling back \
+                         to password unlock: {message}"
+                    );
+                }
+                Err(rbw::desktop_ipc::Error::UnsupportedPlatform) => {
+                    log::warn!(
+                        "biometric_unlock is configured but this build \
+                         does not support Bitwarden Desktop IPC, falling \
+                         back to password unlock"
+                    );
+                }
+            }
+        }
+
         let mut err_msg = None;
         for i in 1_u8..=3 {
             let err = if i > 1 {
@@ -816,6 +870,30 @@ async fn config_base_url() -> anyhow::Result<String> {
 async fn config_pinentry() -> anyhow::Result<String> {
     let config = rbw::config::Config::load_async().await?;
     Ok(config.pinentry)
+}
+
+async fn desktop_ipc_identity(
+) -> anyhow::Result<Option<rbw::desktop_ipc::Identity>> {
+    let config = rbw::config::Config::load_async().await?;
+    if config.biometric_unlock
+        != Some(rbw::config::BiometricUnlock::DesktopIpc)
+    {
+        return Ok(None);
+    }
+    let server_name = config.server_name();
+    let email = config.email.ok_or_else(|| {
+        anyhow::anyhow!("failed to find email address in config")
+    })?;
+    let db = load_db().await?;
+    let access_token = db.access_token.ok_or_else(|| {
+        anyhow::anyhow!("failed to find access token in db")
+    })?;
+    Ok(Some(rbw::desktop_ipc::identity_from_access_token(
+        rbw::dirs::profile(),
+        server_name,
+        email,
+        &access_token,
+    )?))
 }
 
 pub async fn subscribe_to_notifications(

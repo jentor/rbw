@@ -86,6 +86,9 @@ pub enum Error {
     #[error("invalid mac")]
     InvalidMac,
 
+    #[error("invalid key bytes length: expected 64, got {len}")]
+    InvalidKeyBytes { len: usize },
+
     #[error("invalid two factor provider type: {ty}")]
     InvalidTwoFactorProvider { ty: String },
 

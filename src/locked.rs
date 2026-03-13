@@ -40,6 +40,12 @@ impl Vec {
         Self::default()
     }
 
+    pub fn from_slice(data: &[u8]) -> Self {
+        let mut vec = Self::new();
+        vec.extend_from_slice(data);
+        vec
+    }
+
     pub fn data(&self) -> &[u8] {
         self.data.as_slice()
     }
@@ -55,6 +61,10 @@ impl Vec {
 
     pub fn extend(&mut self, it: impl Iterator<Item = u8>) {
         self.data.extend(it);
+    }
+
+    pub fn extend_from_slice(&mut self, data: &[u8]) {
+        self.data.extend(data.iter().copied());
     }
 
     pub fn truncate(&mut self, len: usize) {
@@ -100,6 +110,19 @@ pub struct Keys {
 impl Keys {
     pub fn new(keys: Vec) -> Self {
         Self { keys }
+    }
+
+    pub fn from_bytes(keys: &[u8]) -> Result<Self, crate::error::Error> {
+        if keys.len() != 64 {
+            return Err(crate::error::Error::InvalidKeyBytes {
+                len: keys.len(),
+            });
+        }
+        Ok(Self::new(Vec::from_slice(keys)))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.keys.data()
     }
 
     pub fn enc_key(&self) -> &[u8] {

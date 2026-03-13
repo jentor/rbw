@@ -167,9 +167,15 @@ impl CipherString {
                 ciphertext,
                 mac.as_deref(),
             )?;
-            cipher
-                .decrypt_padded_mut::<block_padding::Pkcs7>(res.data_mut())
-                .map_err(|source| Error::Decrypt { source })?;
+            let plaintext_len = {
+                let plaintext = cipher
+                    .decrypt_padded_mut::<block_padding::Pkcs7>(
+                        res.data_mut(),
+                    )
+                    .map_err(|source| Error::Decrypt { source })?;
+                plaintext.len()
+            };
+            res.truncate(plaintext_len);
             Ok(res)
         } else {
             Err(Error::InvalidCipherString {

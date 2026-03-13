@@ -97,6 +97,80 @@ pub async fn getpin(
     Ok(crate::locked::Password::new(buf))
 }
 
+pub async fn confirm(
+    pinentry: &str,
+    prompt: &str,
+    desc: &str,
+    environment: &crate::protocol::Environment,
+) -> Result<bool> {
+    let mut opts = tokio::process::Command::new(pinentry);
+    opts.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    let mut args = vec!["--timeout".into(), "0".into()];
+    if let Some(tty) = environment.tty() {
+        args.extend(["--ttyname".into(), tty.into()]);
+    }
+
+    let env_vars = environment.env_vars();
+    if let Some(display) =
+        env_vars.get(std::ffi::OsString::from("DISPLAY").as_os_str())
+    {
+        args.extend(["--display".into(), display.clone()]);
+    }
+    opts.args(args);
+
+    for env_var in &*crate::protocol::ENVIRONMENT_VARIABLES_OS {
+        if let Some(val) = env_vars.get(env_var) {
+            opts.env(env_var, val);
+        } else {
+            opts.env_remove(env_var);
+        }
+    }
+    opts.envs(env_vars);
+
+    let mut child = opts.spawn().map_err(|source| Error::Spawn { source })?;
+    let mut stdin = child.stdin.take().unwrap();
+
+    stdin
+        .write_all(b"SETTITLE rbw\n")
+        .await
+        .map_err(|source| Error::WriteStdin { source })?;
+    stdin
+        .write_all(format!("SETPROMPT {prompt}\n").as_bytes())
+        .await
+        .map_err(|source| Error::WriteStdin { source })?;
+    stdin
+        .write_all(format!("SETDESC {desc}\n").as_bytes())
+        .await
+        .map_err(|source| Error::WriteStdin { source })?;
+    stdin
+        .write_all(b"SETOK Trust\n")
+        .await
+        .map_err(|source| Error::WriteStdin { source })?;
+    stdin
+        .write_all(b"SETCANCEL Cancel\n")
+        .await
+        .map_err(|source| Error::WriteStdin { source })?;
+    stdin
+        .write_all(b"CONFIRM\n")
+        .await
+        .map_err(|source| Error::WriteStdin { source })?;
+    drop(stdin);
+
+    let accepted = match read_confirm(child.stdout.as_mut().unwrap()).await {
+        Ok(()) => true,
+        Err(Error::PinentryCancelled) => false,
+        Err(e) => return Err(e),
+    };
+
+    child
+        .wait()
+        .await
+        .map_err(|source| Error::PinentryWait { source })?;
+
+    Ok(accepted)
+}
+
 async fn read_password<R>(
     mut ncommands: u8,
     data: &mut [u8],
@@ -177,6 +251,69 @@ where
     len = percent_decode(&mut data[..len]);
 
     Ok(len)
+}
+
+async fn read_confirm<R>(mut r: R) -> Result<()>
+where
+    R: tokio::io::AsyncRead + tokio::io::AsyncReadExt + Unpin + Send,
+{
+    let mut buf = [0_u8; 4096];
+    let mut len = 0;
+    loop {
+        let nl = buf.iter().take(len).position(|c| *c == b'\n');
+        if let Some(nl) = nl {
+            if buf.starts_with(b"OK") {
+                return Ok(());
+            }
+            if buf.starts_with(b"S ") {
+                buf.copy_within((nl + 1)..len, 0);
+                len -= nl + 1;
+                continue;
+            }
+            if buf.starts_with(b"ERR ") {
+                let line = String::from_utf8_lossy(&buf[..nl]).to_string();
+                let mut split = line.splitn(3, ' ');
+                let _ = split.next();
+                let code = split.next();
+                return match code {
+                    Some("83886179") => Err(Error::PinentryCancelled),
+                    Some(code) => {
+                        if let Some(error) = split.next() {
+                            Err(Error::PinentryErrorMessage {
+                                error: error.to_string(),
+                            })
+                        } else {
+                            Err(Error::PinentryErrorMessage {
+                                error: format!("unknown error ({code})"),
+                            })
+                        }
+                    }
+                    None => Err(Error::PinentryErrorMessage {
+                        error: "unknown error".to_string(),
+                    }),
+                };
+            }
+            return Err(Error::FailedToParsePinentry {
+                out: String::from_utf8_lossy(&buf[..len])
+                    .trim_end_matches('\0')
+                    .to_string(),
+            });
+        }
+
+        let bytes = r
+            .read(&mut buf[len..])
+            .await
+            .map_err(|source| Error::PinentryReadOutput { source })?;
+        if bytes == 0 {
+            return Err(Error::PinentryReadOutput {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF",
+                ),
+            });
+        }
+        len += bytes;
+    }
 }
 
 // not using the percent-encoding crate because it doesn't provide a way to do

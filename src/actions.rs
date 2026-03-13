@@ -89,6 +89,28 @@ pub fn unlock<S: std::hash::BuildHasher>(
     crate::locked::Keys,
     std::collections::HashMap<String, crate::locked::Keys>,
 )> {
+    let key = derive_user_key(
+        email,
+        password,
+        kdf,
+        iterations,
+        memory,
+        parallelism,
+        protected_key,
+    )?;
+
+    expand_user_key(key, protected_private_key, protected_org_keys)
+}
+
+pub fn derive_user_key(
+    email: &str,
+    password: &crate::locked::Password,
+    kdf: crate::api::KdfType,
+    iterations: u32,
+    memory: Option<u32>,
+    parallelism: Option<u32>,
+    protected_key: &str,
+) -> Result<crate::locked::Keys> {
     let identity = crate::identity::Identity::new(
         email,
         password,
@@ -110,6 +132,17 @@ pub fn unlock<S: std::hash::BuildHasher>(
         Err(e) => return Err(e),
     };
 
+    Ok(key)
+}
+
+pub fn expand_user_key<S: std::hash::BuildHasher>(
+    key: crate::locked::Keys,
+    protected_private_key: &str,
+    protected_org_keys: &std::collections::HashMap<String, String, S>,
+) -> Result<(
+    crate::locked::Keys,
+    std::collections::HashMap<String, crate::locked::Keys>,
+)> {
     let protected_private_key =
         crate::cipherstring::CipherString::new(protected_private_key)?;
     let private_key =
@@ -131,6 +164,104 @@ pub fn unlock<S: std::hash::BuildHasher>(
     }
 
     Ok((key, org_keys))
+}
+
+#[cfg(test)]
+mod tests {
+    use rsa::pkcs8::EncodePrivateKey as _;
+
+    use super::{derive_user_key, expand_user_key};
+
+    fn password(s: &str) -> crate::locked::Password {
+        crate::locked::Password::new(crate::locked::Vec::from_slice(
+            s.as_bytes(),
+        ))
+    }
+
+    #[test]
+    fn derive_user_key_roundtrips_protected_key() {
+        let password = password("correct horse battery staple");
+        let email = "user@example.com";
+        let identity = crate::identity::Identity::new(
+            email,
+            &password,
+            crate::api::KdfType::Pbkdf2,
+            600_000,
+            None,
+            None,
+        )
+        .unwrap();
+        let user_key_bytes = [7_u8; 64];
+        let user_key =
+            crate::locked::Keys::from_bytes(&user_key_bytes).unwrap();
+        let protected_key =
+            crate::cipherstring::CipherString::encrypt_symmetric(
+                &identity.keys,
+                user_key.as_bytes(),
+            )
+            .unwrap()
+            .to_string();
+
+        let derived = derive_user_key(
+            email,
+            &password,
+            crate::api::KdfType::Pbkdf2,
+            600_000,
+            None,
+            None,
+            &protected_key,
+        )
+        .unwrap();
+
+        assert_eq!(derived.as_bytes(), user_key.as_bytes());
+    }
+
+    #[test]
+    fn expand_user_key_unlocks_private_and_org_keys() {
+        let mut rng = rand_8::thread_rng();
+        let user_key_bytes = [9_u8; 64];
+        let user_key =
+            crate::locked::Keys::from_bytes(&user_key_bytes).unwrap();
+
+        let rsa_key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let public_key = rsa::RsaPublicKey::from(&rsa_key);
+        let private_key_der = rsa_key.to_pkcs8_der().unwrap();
+        let padded_private_key = pkcs7_pad(private_key_der.as_bytes(), 16);
+        let protected_private_key =
+            crate::cipherstring::CipherString::encrypt_symmetric(
+                &user_key,
+                &padded_private_key,
+            )
+            .unwrap()
+            .to_string();
+
+        let org_key_bytes = [3_u8; 64];
+        let encrypted_org_key = public_key
+            .encrypt(&mut rng, rsa::Oaep::new::<sha1::Sha1>(), &org_key_bytes)
+            .unwrap();
+        let mut protected_org_keys = std::collections::HashMap::new();
+        protected_org_keys.insert(
+            "org".to_string(),
+            format!("4.{}", crate::base64::encode(&encrypted_org_key)),
+        );
+
+        let (expanded_user_key, org_keys) = expand_user_key(
+            user_key,
+            &protected_private_key,
+            &protected_org_keys,
+        )
+        .unwrap();
+
+        assert_eq!(expanded_user_key.as_bytes(), &user_key_bytes);
+        assert_eq!(org_keys["org"].as_bytes(), &org_key_bytes);
+    }
+
+    fn pkcs7_pad(data: &[u8], block_size: usize) -> Vec<u8> {
+        let padding = block_size - (data.len() % block_size);
+        let mut out = data.to_vec();
+        out.extend(std::iter::repeat_n(padding as u8, padding));
+        out
+    }
 }
 
 pub async fn sync(

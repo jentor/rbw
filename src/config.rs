@@ -4,7 +4,15 @@ use std::io::{Read as _, Write as _};
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, Eq, PartialEq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BiometricUnlock {
+    DesktopIpc,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct Config {
     pub email: Option<String>,
     pub sso_id: Option<String>,
@@ -18,6 +26,7 @@ pub struct Config {
     pub sync_interval: u64,
     #[serde(default = "default_pinentry")]
     pub pinentry: String,
+    pub biometric_unlock: Option<BiometricUnlock>,
     pub client_cert_path: Option<std::path::PathBuf>,
     // backcompat, no longer generated in new configs
     #[serde(skip_serializing)]
@@ -36,6 +45,7 @@ impl Default for Config {
             lock_timeout: default_lock_timeout(),
             sync_interval: default_sync_interval(),
             pinentry: default_pinentry(),
+            biometric_unlock: None,
             client_cert_path: None,
             device_id: None,
         }
@@ -213,6 +223,32 @@ impl Config {
         self.base_url
             .clone()
             .unwrap_or_else(|| "default".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BiometricUnlock, Config};
+
+    #[test]
+    fn biometric_unlock_roundtrips() {
+        let mut config = Config::new();
+        config.biometric_unlock = Some(BiometricUnlock::DesktopIpc);
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"biometric_unlock\":\"desktop_ipc\""));
+
+        let decoded: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            decoded.biometric_unlock,
+            Some(BiometricUnlock::DesktopIpc)
+        );
+    }
+
+    #[test]
+    fn biometric_unlock_defaults_to_none() {
+        let decoded: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(decoded.biometric_unlock, None);
     }
 }
 
